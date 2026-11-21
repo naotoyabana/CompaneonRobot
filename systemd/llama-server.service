@@ -1,0 +1,19 @@
+[Unit]
+Description=llama-server (LLM for StackChan, port 30000)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=utaf3
+WorkingDirectory=/home/utaf3/llama.cpp
+ExecStart=/home/utaf3/llama.cpp/build/bin/llama-server -m /home/utaf3/models/qwen3-30b-a3b.gguf --host 0.0.0.0 --port 30000 --jinja -c 8192 --slot-save-path /home/utaf3/llama-slots
+# 起動直後に、前回保存した「読み込み済みの指示文」を復元する（最初の 1 回を速くする）
+ExecStartPost=-/home/utaf3/companeonrobot/systemd/llama-slot.sh restore
+# 止める直前に保存する
+ExecStop=-/home/utaf3/companeonrobot/systemd/llama-slot.sh save
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

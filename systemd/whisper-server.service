@@ -1,0 +1,14 @@
+[Unit]
+Description=whisper-server (speech recognition on GPU for StackChan, port 30001)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=utaf3
+WorkingDirectory=/home/utaf3/whisper.cpp
+ExecStart=/home/utaf3/whisper.cpp/build/bin/whisper-server -m /home/utaf3/models/ggml-large-v3-turbo.bin --host 0.0.0.0 --port 30001 -l ja
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
