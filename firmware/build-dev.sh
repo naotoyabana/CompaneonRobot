@@ -12,7 +12,9 @@ IDF_IMAGE="espressif/idf:v5.5.4"
 # sdkconfig.defaults.* は sdkconfig が無いときにしか読まれないので、
 # 中身が変わったときだけ sdkconfig を消して作り直させる（毎回消すと全部ビルドし直しになる）。
 DEFAULTS="$SRC/firmware/sdkconfig.defaults.local"
-NEW=$(printf 'CONFIG_OTA_URL="http://%s:8003/xiaozhi/ota/"\nCONFIG_STACKCHAN_SERVER_URL="http://127.0.0.1:9"\n' "$SERVER_IP")
+# STACKCHAN_SERVER_URL は「体の電話」（WS-Avatar）の相手先＝自作の体サーバー（body/server.py、ポート 8100）。
+# 元のキットは http://127.0.0.1:9（無効）にしていた。
+NEW=$(printf 'CONFIG_OTA_URL="http://%s:8003/xiaozhi/ota/"\nCONFIG_STACKCHAN_SERVER_URL="http://%s:8100"\n' "$SERVER_IP" "$SERVER_IP")
 if [ "$(cat "$DEFAULTS" 2>/dev/null)" != "$NEW" ]; then
   printf '%s\n' "$NEW" > "$DEFAULTS"
   rm -f "$SRC/firmware/sdkconfig"
