@@ -10,6 +10,7 @@
         角度は「今の向きからのずれ」ではなく決まった向き：
           yaw（横）  0 が正面、プラスが右、-128〜128
           pitch（縦）0 がまっすぐ前、90 が真上、実際に動けるのは 3〜87
+        cam on で撮影を始め（届いた画像は captures/ に保存）、cam off で止める。
         q で終了。
 
 ファーム側の決まり（firmware/main/hal/hal_ws_avatar.cpp）：
@@ -20,10 +21,13 @@
 
 import asyncio
 import json
+from datetime import datetime
+from pathlib import Path
 
 from websockets.asyncio.server import serve
 
 PORT = 8100
+CAPTURE_DIR = Path(__file__).parent / "captures"  # 画像の保存先（body/captures/）
 
 # データの種類（hal_ws_avatar.cpp の DataType と同じ番号）
 JPEG = 0x02
@@ -61,6 +65,20 @@ def motion_json(yaw_deg: int, pitch_deg: int, speed: int = 300) -> str:
     return json.dumps({"yawServo": {"angle": yaw_deg*10, "speed": speed}, "pitchServo": {"angle": pitch_deg*10, "speed": speed}})
 
 
+def save_jpeg(payload: bytes) -> Path:
+    """届いた JPEG を captures/ にファイルとして保存し、保存先を返す。"""
+    CAPTURE_DIR.mkdir(exist_ok=True)  # フォルダがなければ作る
+    # TODO 5：時刻入りのファイル名を作り、payload をそのまま書き込んで、保存先を返す。
+    #   ヒント：datetime.now().strftime("%Y%m%d-%H%M%S-%f") で「20261126-153012-345678」の形の文字列。
+    #           [:-3] で最後の 3 文字を落とすと、ミリ秒まで（…-345）になる。
+    #           path = CAPTURE_DIR / (名前 + ".jpg") で保存先。
+    #           path.write_bytes(payload) でバイト列をそのままファイルに書く。
+    name = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    path = CAPTURE_DIR / (name + ".jpg")
+    path.write_bytes(payload)
+    return path
+
+
 # 今つながっているスタックチャン（1 台だけ想定）
 robot = None
 
@@ -81,14 +99,23 @@ async def handle_robot(ws):
     print(f"  合言葉：{ws.request.headers.get('Authorization')}")
     robot = ws
     beat = asyncio.create_task(heartbeat(ws))
+    count = 0
     try:
         async for message in ws:  # 届くたびに 1 回まわる
             if isinstance(message, str):  # 文字（最初の hello など）
                 print(f"文字：{message}")
+                if message == "camera stream stopped":
+                    print(f"  画像を {count} 枚保存した（captures/）")
+                    count = 0
                 continue
             kind, payload = parse_packet(message)
             if kind == HEARTBEAT_PONG:
                 pass  # 生存確認の返事。うるさいので表示しない
+            elif kind == JPEG:
+                path = save_jpeg(payload)
+                count += 1
+                if count == 1:  # 1 枚目だけ表示
+                    print(f"画像：{path.name}（{len(payload)} バイト）")
             else:
                 print(f"届いた：種類 0x{kind:02x}、{len(payload)} バイト")
     finally:
@@ -106,6 +133,18 @@ async def command_loop():
         if robot is None:
             print("  まだスタックチャンがつながっていない")
             continue
+        # TODO 6：line.strip() が "cam on" なら START_CAMERA を、"cam off" なら STOP_CAMERA を
+        #   （中身なしで）送り、「送った：撮影開始」などと表示して continue（下の yaw pitch の処理に進まない）。
+        #   ヒント：送り方は下の robot.send(make_packet(...)) と同じ。中身なしは TODO 4 と同じ。
+        if line.strip() == "cam on":
+            await robot.send(make_packet(START_CAMERA))
+            print("  送った：撮影開始")
+            continue
+        if line.strip() == "cam off":
+            await robot.send(make_packet(STOP_CAMERA))
+            print("  送った：撮影終了")
+            continue
+
         try:
             numbers = [int(x) for x in line.split()]
             yaw, pitch = numbers[0], numbers[1]
