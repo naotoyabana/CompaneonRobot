@@ -1,0 +1,20 @@
+[Unit]
+Description=body-server (StackChan WS-Avatar: head and camera, port 8100)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=utaf3
+WorkingDirectory=/home/utaf3/companeonrobot/body
+ExecStart=/home/utaf3/.local/bin/uv run server.py
+# print() をすぐ journal に出す（ないと溜めてから出すので、ログが遅れる）
+Environment=PYTHONUNBUFFERED=1
+# ターミナルがないので、指示は受け付けない（server.py の TODO 8）
+StandardInput=null
+Restart=always
+RestartSec=5
+# systemctl stop で止めたとき uv は 143（「止めて」の合図 SIGTERM で終わった）を返す。それを「正常に終わった」とみなす
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

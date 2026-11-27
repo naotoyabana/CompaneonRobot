@@ -21,10 +21,12 @@
 
 import asyncio
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosedError
 
 PORT = 8100
 CAPTURE_DIR = Path(__file__).parent / "captures"  # 画像の保存先（body/captures/）
@@ -81,6 +83,8 @@ def save_jpeg(payload: bytes) -> Path:
 
 # 今つながっているスタックチャン（1 台だけ想定）
 robot = None
+# 合図なしで切れた回数（起動してから）。M4 で「どのくらい切れるか」を見るため
+drops = 0
 
 
 async def heartbeat(ws):
@@ -94,7 +98,7 @@ async def heartbeat(ws):
 
 async def handle_robot(ws):
     """スタックチャンが電話をかけてきたら、ここが動く。"""
-    global robot
+    global robot, drops
     print(f"つながった：{ws.remote_address[0]}  {ws.request.path}")
     print(f"  合言葉：{ws.request.headers.get('Authorization')}")
     robot = ws
@@ -118,6 +122,14 @@ async def handle_robot(ws):
                     print(f"画像：{path.name}（{len(payload)} バイト）")
             else:
                 print(f"届いた：種類 0x{kind:02x}、{len(payload)} バイト")
+    except ConnectionClosedError:
+        # ここに来るのは、スタックチャンが「切るね」の合図なしで切れたとき（今まで長い Traceback が出ていたもの）。
+        # 受け止めると Traceback は出なくなる。スタックチャンは自分でつなぎ直してくる。
+        # TODO 7：drops を 1 増やし、時刻と回数を 1 行で表示する。例：「15:20:01 合図なしで切れた（3 回目）」
+        #   ヒント：datetime.now().strftime("%H:%M:%S") で「15:20:01」。
+        #           drops は上で global と書いてあるので、ここで drops += 1 と書ける。
+        drops += 1
+        print(f"{datetime.now().strftime("%H:%M:%S")} 合図なしで切れた（{drops} 回目）")
     finally:
         beat.cancel()
         robot = None
@@ -159,7 +171,17 @@ async def command_loop():
 async def main():
     async with serve(handle_robot, "0.0.0.0", PORT):
         print(f"体サーバー起動：ポート {PORT}")
-        await command_loop()
+        # TODO 8：ターミナルから起動したときだけ command_loop() で指示を受け付ける。
+        #   systemd で動いているとき（ターミナルがない）は、指示は受け付けず、電話を受けるだけにする。
+        #   ヒント：sys.stdin.isatty() は、キーボードを打てるターミナルなら True、systemd なら False。
+        #           False のときは「ターミナルなし：電話を受けるだけ」のように 1 行表示してから
+        #           await asyncio.Future() と書く（何も起きない約束を待つ＝止められるまでずっと待つ）。
+        #           ここで main() が終わると、async with を抜けて電話の受け口も閉じてしまう。
+        if(sys.stdin.isatty()):
+            await command_loop()
+        else:
+            print("ターミナルなし：電話を受けるだけ")
+            await asyncio.Future()
 
 
 if __name__ == "__main__":
