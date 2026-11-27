@@ -132,8 +132,16 @@ async def handle_robot(ws):
         print(f"{datetime.now().strftime("%H:%M:%S")} 合図なしで切れた（{drops} 回目）")
     finally:
         beat.cancel()
-        robot = None
-        print("切れた")
+        # TODO 9：スタックチャンは切れると 0.5 秒ほどで新しい電話をかけ直してくる。古い電話の「切れた」に
+        #   サーバーが気づくのが、新しい電話の「つながった」より後になると、ここで新しい電話の robot まで
+        #   None にしてしまい、首の指示が送れなくなる（2026-11-27 の 1 時間テストで起きた）。
+        #   → robot が「この電話（ws）」のときだけ None にする。
+        #   ヒント：「同じものか」は is で比べる（if robot is ws:）。
+        if robot is ws:
+            robot = None
+            print("切れた")
+        else:
+            print("古い電話を片付けた（新しい電話はつながったまま）")
 
 
 async def command_loop():
