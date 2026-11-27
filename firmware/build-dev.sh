@@ -14,7 +14,9 @@ IDF_IMAGE="espressif/idf:v5.5.4"
 DEFAULTS="$SRC/firmware/sdkconfig.defaults.local"
 # STACKCHAN_SERVER_URL は「体の電話」（WS-Avatar）の相手先＝自作の体サーバー（body/server.py、ポート 8100）。
 # 元のキットは http://127.0.0.1:9（無効）にしていた。
-NEW=$(printf 'CONFIG_OTA_URL="http://%s:8003/xiaozhi/ota/"\nCONFIG_STACKCHAN_SERVER_URL="http://%s:8100"\n' "$SERVER_IP" "$SERVER_IP")
+# LWIP_TCPIP_TASK_STACK_SIZE は通信の中心の係（tiT）の作業机。初期値 3072 では、体の電話と撮影を足すと
+# 残りが 100 バイトまで減っていた（M3）ので 4096 に。
+NEW=$(printf 'CONFIG_OTA_URL="http://%s:8003/xiaozhi/ota/"\nCONFIG_STACKCHAN_SERVER_URL="http://%s:8100"\nCONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096\n' "$SERVER_IP" "$SERVER_IP")
 if [ "$(cat "$DEFAULTS" 2>/dev/null)" != "$NEW" ]; then
   printf '%s\n' "$NEW" > "$DEFAULTS"
   rm -f "$SRC/firmware/sdkconfig"
