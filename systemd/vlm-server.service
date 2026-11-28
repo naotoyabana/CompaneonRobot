@@ -1,0 +1,17 @@
+[Unit]
+Description=llama-server (VLM for StackChan: image -> description, port 30002)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=utaf3
+WorkingDirectory=/home/utaf3/llama.cpp
+# --mmproj：画像を言葉のモデルが読める形に変える部分（目）
+# -c 8192：1 回の問い合わせは画像 1 枚＋短い指示なので、会話用と同じ長さで足りる
+ExecStart=/home/utaf3/llama.cpp/build/bin/llama-server -m /home/utaf3/models/qwen3-vl-30b-a3b/Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf --mmproj /home/utaf3/models/qwen3-vl-30b-a3b/mmproj-Qwen3VL-30B-A3B-Instruct-F16.gguf --host 0.0.0.0 --port 30002 --jinja -c 8192
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
