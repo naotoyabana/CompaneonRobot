@@ -13,6 +13,7 @@
         cam on で撮影を始め（届いた画像は captures/ に保存）、cam off で止める。
         look yaw pitch で、その向きを見て VLM に説明させる（M5-3）。例：look 45 20
           首を向ける → 止まるのを待つ → その後に届いた 1 枚を captures/ に保存 → 説明を表示
+          結果は observations.db（SQLite）にも保存する（M5-4）。log [件数] で新しい順に表示
         q で終了。
 
 ファーム側の決まり（firmware/main/hal/hal_ws_avatar.cpp）：
@@ -31,6 +32,7 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
+import memory  # 同じフォルダの memory.py（見たものを SQLite に記録する）
 import vision  # 同じフォルダの vision.py（VLM に写真を説明させる）
 
 PORT = 8100
@@ -188,6 +190,7 @@ async def look(yaw: int, pitch: int):
     jpeg = latest_frame[1]
     path = save_jpeg(jpeg)
     text, seconds = await vision.describe(jpeg)
+    memory.save(yaw, pitch, text, path.name, seconds)
     return path, text, seconds
 
 
@@ -195,9 +198,15 @@ async def command_loop():
     """ターミナルに打った指示（yaw pitch、cam on/off、look）を送る。"""
     global camera_on, save_all
     while True:
-        line = await asyncio.to_thread(input, "yaw pitch [速さ] / cam on|off / look yaw pitch> ")
+        line = await asyncio.to_thread(input, "yaw pitch [速さ] / cam on|off / look yaw pitch / log [件数]> ")
         if line.strip() == "q":
             return
+        if line.startswith("log"):  # 記録を見るだけなので、スタックチャンがいなくても使える
+            words = line.split()
+            limit = int(words[1]) if len(words) >= 2 and words[1].isdigit() else 10
+            for id_, time_, yaw, pitch, description in memory.latest(limit):
+                print(f"  {id_:4d} {time_} ({yaw:4d}, {pitch:3d}) {description}")
+            continue
         if robot is None:
             print("  まだスタックチャンがつながっていない")
             continue

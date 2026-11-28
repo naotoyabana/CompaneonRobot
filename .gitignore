@@ -4,3 +4,4 @@ CLAUDE.md
 firmware/logs/
 body/captures/
 __pycache__/
+body/observations.db
