@@ -11,6 +11,8 @@
           yaw（横）  0 が正面、プラスが右、-128〜128
           pitch（縦）0 がまっすぐ前、90 が真上、実際に動けるのは 3〜87
         cam on で撮影を始め（届いた画像は captures/ に保存）、cam off で止める。
+        look yaw pitch で、その向きを見て VLM に説明させる（M5-3）。例：look 45 20
+          首を向ける → 止まるのを待つ → その後に届いた 1 枚を captures/ に保存 → 説明を表示
         q で終了。
 
 ファーム側の決まり（firmware/main/hal/hal_ws_avatar.cpp）：
@@ -22,11 +24,14 @@
 import asyncio
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
+
+import vision  # 同じフォルダの vision.py（VLM に写真を説明させる）
 
 PORT = 8100
 CAPTURE_DIR = Path(__file__).parent / "captures"  # 画像の保存先（body/captures/）
@@ -40,6 +45,11 @@ STOP_CAMERA = 0x06
 TEXT_MESSAGE = 0x07
 HEARTBEAT_PING = 0x10
 HEARTBEAT_PONG = 0x11
+
+# look の決まり
+LOOK_SPEED = 500        # 首の速さ（会話の LLM と同じ「ふつう」）
+SETTLE_SECONDS = 1.5    # 首を向けてから止まるまで待つ秒数
+FRAME_TIMEOUT = 10      # その後の 1 枚を待つ最大の秒数（撮影は 2 秒に 1 枚。会話中は止まる）
 
 
 def make_packet(kind: int, payload: bytes = b"") -> bytes:
@@ -85,6 +95,10 @@ def save_jpeg(payload: bytes) -> Path:
 robot = None
 # 合図なしで切れた回数（起動してから）。M4 で「どのくらい切れるか」を見るため
 drops = 0
+# 撮影の状態
+camera_on = False     # 撮影中か（cam on か look で始めた）
+save_all = False      # 届いた画像を全部保存するか（cam on のときだけ。look は使った 1 枚だけ保存）
+latest_frame = None   # 最後に届いた画像：(届いた時刻, JPEG のバイト列)。時刻は time.monotonic()
 
 
 async def heartbeat(ws):
@@ -98,10 +112,11 @@ async def heartbeat(ws):
 
 async def handle_robot(ws):
     """スタックチャンが電話をかけてきたら、ここが動く。"""
-    global robot, drops
+    global robot, drops, camera_on, save_all, latest_frame
     print(f"つながった：{ws.remote_address[0]}  {ws.request.path}")
     print(f"  合言葉：{ws.request.headers.get('Authorization')}")
     robot = ws
+    camera_on = save_all = False  # つなぎ直したスタックチャンは撮影していない
     beat = asyncio.create_task(heartbeat(ws))
     count = 0
     try:
@@ -116,10 +131,16 @@ async def handle_robot(ws):
             if kind == HEARTBEAT_PONG:
                 pass  # 生存確認の返事。うるさいので表示しない
             elif kind == JPEG:
-                path = save_jpeg(payload)
-                count += 1
-                if count == 1:  # 1 枚目だけ表示
-                    print(f"画像：{path.name}（{len(payload)} バイト）")
+                # TODO 12：届いた時刻と画像を latest_frame に覚えておく（look が使う）。
+                #   ヒント：(time.monotonic(), payload) のように 2 つを ( ) で 1 組にできる。
+                #           time.monotonic() は「時計を合わせても戻らない」秒数。差を測るのに使う。
+                # ← ここを書く
+                latest_frame = (time.monotonic(), payload)
+                if save_all:
+                    path = save_jpeg(payload)
+                    count += 1
+                    if count == 1:  # 1 枚目だけ表示
+                        print(f"画像：{path.name}（{len(payload)} バイト）")
             else:
                 print(f"届いた：種類 0x{kind:02x}、{len(payload)} バイト")
     except ConnectionClosedError:
@@ -144,10 +165,37 @@ async def handle_robot(ws):
             print("古い電話を片付けた（新しい電話はつながったまま）")
 
 
+async def look(yaw: int, pitch: int):
+    """その向きを見て、(保存先, 説明文, VLM の秒数) を返す。画像が来なければ None。"""
+    global camera_on
+    if not camera_on:
+        await robot.send(make_packet(START_CAMERA))
+        camera_on = True
+    await robot.send(make_packet(CONTROL_MOTION, motion_json(yaw, pitch, LOOK_SPEED).encode()))
+    await asyncio.sleep(SETTLE_SECONDS)
+    since = time.monotonic()  # これより後に届いた画像なら、首が止まってから撮ったもの
+    # TODO 13：since より後に届いた画像を待つ。FRAME_TIMEOUT 秒たっても来なければ None を返す。
+    #   ヒント：while 「まだ来ていない」: の形でくり返す。「まだ来ていない」は
+    #           latest_frame is None or latest_frame[0] <= since
+    #           くり返しの中では、時間切れ（time.monotonic() > since + FRAME_TIMEOUT）なら return None、
+    #           そうでなければ await asyncio.sleep(0.1) で少し待つ。
+    # ← ここを書く（while ...）
+    while latest_frame is None or latest_frame[0] <= since:
+        if time.monotonic() > since + FRAME_TIMEOUT:
+            return None
+        else:
+            await asyncio.sleep(0.1)
+    jpeg = latest_frame[1]
+    path = save_jpeg(jpeg)
+    text, seconds = await vision.describe(jpeg)
+    return path, text, seconds
+
+
 async def command_loop():
-    """ターミナルに打った「yaw pitch」を首の指示にして送る。"""
+    """ターミナルに打った指示（yaw pitch、cam on/off、look）を送る。"""
+    global camera_on, save_all
     while True:
-        line = await asyncio.to_thread(input, "yaw pitch [速さ]> ")
+        line = await asyncio.to_thread(input, "yaw pitch [速さ] / cam on|off / look yaw pitch> ")
         if line.strip() == "q":
             return
         if robot is None:
@@ -158,12 +206,35 @@ async def command_loop():
         #   ヒント：送り方は下の robot.send(make_packet(...)) と同じ。中身なしは TODO 4 と同じ。
         if line.strip() == "cam on":
             await robot.send(make_packet(START_CAMERA))
+            camera_on = save_all = True
             print("  送った：撮影開始")
             continue
         if line.strip() == "cam off":
             await robot.send(make_packet(STOP_CAMERA))
+            camera_on = save_all = False
             print("  送った：撮影終了")
             continue
+        if line.startswith("look"):
+            # TODO 14：「look 45 20」の 45 と 20 を取り出して look(yaw, pitch) を呼び、結果を表示する。
+            #   ヒント：line.split() で ["look", "45", "20"] になる。数字は int(...) で。
+            #           書き間違い（数字でない、足りない）は、下の yaw pitch と同じく try/except で受けて例を表示。
+            #           result = await look(yaw, pitch)。None なら「画像が来ない（会話中？）」と表示。
+            #           そうでなければ path, text, seconds = result として、例えば
+            #             「  見た：20261128-170000-123.jpg（VLM 0.6 秒）」と「  説明文」の 2 行を表示。
+            try:
+                yaw = int(line.split()[1])
+                pitch = int(line.split()[2])
+            except (ValueError, IndexError):
+                print("  例：look 45 20")
+                continue
+            result = await look(yaw, pitch)
+            if result is None:
+                print("画像が来ない（会話中？）")
+            else:
+                path, text, seconds = result
+                print(f"  見た：{path.name} (VLM {seconds:.1f} 秒)\n  説明文 {text}")
+            continue
+            
 
         try:
             numbers = [int(x) for x in line.split()]
