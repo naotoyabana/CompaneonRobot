@@ -3,3 +3,4 @@ memo/
 CLAUDE.md
 firmware/logs/
 body/captures/
+__pycache__/
