@@ -14,6 +14,8 @@
         look yaw pitch で、その向きを見て VLM に説明させる（M5-3）。例：look 45 20
           首を向ける → 止まるのを待つ → その後に届いた 1 枚を captures/ に保存 → 説明を表示
           結果は observations.db（SQLite）にも保存する（M5-4）。log [件数] で新しい順に表示
+        patrol on / patrol off で自動の見回し（M5-5）を始める／止める。
+          ターミナルで起動したときは止まった状態で始まる。systemd のときは最初から見回す。
         q で終了。
 
 ファーム側の決まり（firmware/main/hal/hal_ws_avatar.cpp）：
@@ -52,6 +54,12 @@ HEARTBEAT_PONG = 0x11
 LOOK_SPEED = 500        # 首の速さ（会話の LLM と同じ「ふつう」）
 SETTLE_SECONDS = 1.5    # 首を向けてから止まるまで待つ秒数
 FRAME_TIMEOUT = 10      # その後の 1 枚を待つ最大の秒数（撮影は 2 秒に 1 枚。会話中は止まる）
+
+# 自動の見回し（M5-5）
+PATROL_SECONDS = 30     # 1 方向ごとの間隔
+# 回る向き (yaw, pitch)。下の段を左→右、上の段を右→左（端から端へ一気に振らない）
+PATROL = [(-90, 10), (-45, 10), (0, 10), (45, 10), (90, 10),
+          (90, 40), (45, 40), (0, 40), (-45, 40), (-90, 40)]
 
 
 def make_packet(kind: int, payload: bytes = b"") -> bytes:
@@ -101,6 +109,9 @@ drops = 0
 camera_on = False     # 撮影中か（cam on か look で始めた）
 save_all = False      # 届いた画像を全部保存するか（cam on のときだけ。look は使った 1 枚だけ保存）
 latest_frame = None   # 最後に届いた画像：(届いた時刻, JPEG のバイト列)。時刻は time.monotonic()
+patrol_on = False     # 自動の見回しをしているか
+# look を 1 度に 1 つだけ動かすための鍵（手で打った look と見回しの look が混ざらないように）
+look_lock = asyncio.Lock()
 
 
 async def heartbeat(ws):
@@ -168,7 +179,13 @@ async def handle_robot(ws):
 
 
 async def look(yaw: int, pitch: int):
-    """その向きを見て、(保存先, 説明文, VLM の秒数) を返す。画像が来なければ None。"""
+    """その向きを見て、(保存先, 説明文, VLM の秒数) を返す。画像が来なければ None。
+    鍵（look_lock）を持っている間だけ動く。ほかの look が動いていたら、終わるまで待つ。"""
+    async with look_lock:
+        return await look_unlocked(yaw, pitch)
+
+
+async def look_unlocked(yaw: int, pitch: int):
     global camera_on
     if not camera_on:
         await robot.send(make_packet(START_CAMERA))
@@ -194,13 +211,56 @@ async def look(yaw: int, pitch: int):
     return path, text, seconds
 
 
+def now() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+async def patrol():
+    """自動の見回し。PATROL_SECONDS ごとに、PATROL の向きを順に look する。"""
+    i = 0  # 次に見る向きの番号（PATROL の何番目か）
+    while True:
+        await asyncio.sleep(PATROL_SECONDS)
+        if not patrol_on or robot is None:
+            continue
+        # TODO 18：PATROL の i 番目の向きを取り出して look する。
+        #   ・画像が来なかったら（None）、「会話中？」と 1 行表示して、i は進めない（同じ向きを次にやり直す）。
+        #   ・説明が返ったら、時刻・向き・説明文を 1 行表示して、i を 1 進める。最後まで行ったら 0 に戻す。
+        #   ・VLM が止まっているなどでエラーになっても見回し全体が止まらないように、look は try で囲み、
+        #     except Exception as e: で受けて 1 行表示する（i は進めない）。
+        #   ヒント：yaw, pitch = PATROL[i]
+        #           「1 進めて、最後まで行ったら 0」は i = (i + 1) % len(PATROL)（% は割った余り）
+        #           時刻は now()（上に用意した）
+        try:
+            yaw, pitch = PATROL[i]
+            result = await look(yaw, pitch)
+            if result is None:
+                print("会話中？")
+            else:
+                path, text, seconds = result
+                print(f"  見た：{path.name} (VLM {seconds:.1f} 秒)\n  説明文 {text}")
+                i = (i + 1) % len(PATROL)
+        except Exception as e:
+            print(e)
+
 async def command_loop():
     """ターミナルに打った指示（yaw pitch、cam on/off、look）を送る。"""
-    global camera_on, save_all
+    global camera_on, save_all, patrol_on
     while True:
-        line = await asyncio.to_thread(input, "yaw pitch [速さ] / cam on|off / look yaw pitch / log [件数]> ")
+        line = await asyncio.to_thread(input, "yaw pitch [速さ] / cam on|off / look yaw pitch / log [件数] / patrol on|off> ")
         if line.strip() == "q":
             return
+        # TODO 19：line.strip() が "patrol on" なら patrol_on を True に、"patrol off" なら False にして、
+        #   「見回し：開始（30 秒ごと）」などと 1 行表示して continue。
+        #   （patrol_on は上で global と書いてあるので、ここで書き換えられる）
+        # ← ここを書く
+        if line.strip() == "patrol on":
+            patrol_on = True
+            print("見回し：開始（30 秒ごと）")
+            continue
+        if line.strip() == "patrol off":
+            patrol_on = False
+            print("見回し：終了")
+            continue
         if line.startswith("log"):  # 記録を見るだけなので、スタックチャンがいなくても使える
             words = line.split()
             limit = int(words[1]) if len(words) >= 2 and words[1].isdigit() else 10
@@ -257,8 +317,10 @@ async def command_loop():
 
 
 async def main():
+    global patrol_on
     async with serve(handle_robot, "0.0.0.0", PORT):
         print(f"体サーバー起動：ポート {PORT}")
+        patrol_task = asyncio.create_task(patrol())  # 見回しの係。patrol_on が True のときだけ動く
         # TODO 8：ターミナルから起動したときだけ command_loop() で指示を受け付ける。
         #   systemd で動いているとき（ターミナルがない）は、指示は受け付けず、電話を受けるだけにする。
         #   ヒント：sys.stdin.isatty() は、キーボードを打てるターミナルなら True、systemd なら False。
@@ -268,7 +330,8 @@ async def main():
         if(sys.stdin.isatty()):
             await command_loop()
         else:
-            print("ターミナルなし：電話を受けるだけ")
+            print(f"ターミナルなし：電話を受けて、見回す（{PATROL_SECONDS} 秒ごと）")
+            patrol_on = True
             await asyncio.Future()
 
 
